@@ -132,15 +132,19 @@ wire clk_100m_buf;
 wire clk_120m_dac_buf;
 wire ft601_clk_buf;
 wire sys_reset_n;
+wire sys_reset_120m_n;  // Reset synchronized to clk_120m_dac domain
 
 // Transmitter internal signals
 wire [7:0] tx_chirp_data;
 wire tx_chirp_valid;
 wire tx_chirp_done;
-wire tx_new_chirp_frame;
+wire tx_new_chirp_frame;        // In clk_120m_dac domain
+wire tx_new_chirp_frame_sync;   // Synchronized to clk_100m domain
 wire [5:0] tx_current_elevation;
 wire [5:0] tx_current_azimuth;
-wire [5:0] tx_current_chirp;
+wire [5:0] tx_current_chirp;       // In clk_120m_dac domain
+wire [5:0] tx_current_chirp_sync;  // Synchronized to clk_100m domain
+wire tx_current_chirp_sync_valid;
 
 // Receiver internal signals
 wire [31:0] rx_doppler_output;
@@ -186,7 +190,7 @@ BUFG bufg_ft601 (
     .O(ft601_clk_buf)
 );
 
-// Reset synchronization
+// Reset synchronization (clk_100m domain)
 reg [1:0] reset_sync;
 always @(posedge clk_100m_buf or negedge reset_n) begin
     if (!reset_n) begin
@@ -197,6 +201,48 @@ always @(posedge clk_100m_buf or negedge reset_n) begin
 end
 assign sys_reset_n = reset_sync[1];
 
+// Reset synchronization (clk_120m_dac domain)
+// Ensures reset deassertion is synchronous to the DAC clock,
+// preventing recovery/removal timing violations on 120 MHz FFs.
+reg [1:0] reset_sync_120m;
+always @(posedge clk_120m_dac_buf or negedge reset_n) begin
+    if (!reset_n) begin
+        reset_sync_120m <= 2'b00;
+    end else begin
+        reset_sync_120m <= {reset_sync_120m[0], 1'b1};
+    end
+end
+assign sys_reset_120m_n = reset_sync_120m[1];
+
+// ============================================================================
+// CLOCK DOMAIN CROSSING: TRANSMITTER (120 MHz) -> SYSTEM (100 MHz)
+// ============================================================================
+
+// CDC for chirp_counter: 6-bit multi-bit Gray-code synchronizer
+cdc_adc_to_processing #(
+    .WIDTH(6),
+    .STAGES(3)
+) cdc_chirp_counter (
+    .src_clk(clk_120m_dac_buf),
+    .dst_clk(clk_100m_buf),
+    .reset_n(sys_reset_n),
+    .src_data(tx_current_chirp),
+    .src_valid(1'b1),           // Always valid — counter updates continuously
+    .dst_data(tx_current_chirp_sync),
+    .dst_valid(tx_current_chirp_sync_valid)
+);
+
+// CDC for new_chirp_frame: single-bit 3-stage synchronizer
+cdc_single_bit #(
+    .STAGES(3)
+) cdc_new_chirp_frame (
+    .src_clk(clk_120m_dac_buf),
+    .dst_clk(clk_100m_buf),
+    .reset_n(sys_reset_n),
+    .src_signal(tx_new_chirp_frame),
+    .dst_signal(tx_new_chirp_frame_sync)
+);
+
 // ============================================================================
 // RADAR TRANSMITTER INSTANTIATION
 // ============================================================================
@@ -205,7 +251,7 @@ radar_transmitter tx_inst (
     // System Clocks
     .clk_100m(clk_100m_buf),
     .clk_120m_dac(clk_120m_dac_buf),
-    .reset_n(sys_reset_n),
+    .reset_n(sys_reset_120m_n),  // Use 120 MHz-synchronized reset
     
     // DAC Interface
     .dac_data(dac_data),
@@ -271,8 +317,8 @@ radar_receiver_final rx_inst (
     .clk(clk_100m_buf),
     .reset_n(sys_reset_n),
     
-    // Chirp counter from transmitter (NEW-1 fix: was disconnected)
-    .chirp_counter(tx_current_chirp),
+    // Chirp counter from transmitter (CDC-synchronized from 120 MHz domain)
+    .chirp_counter(tx_current_chirp_sync),
     
     // ADC Physical Interface
     .adc_d_p(adc_d_p),
@@ -383,8 +429,8 @@ usb_data_interface usb_inst (
 
 assign current_elevation = tx_current_elevation;
 assign current_azimuth = tx_current_azimuth;
-assign current_chirp = tx_current_chirp;
-assign new_chirp_frame = tx_new_chirp_frame;
+assign current_chirp = tx_current_chirp_sync;        // Use CDC-synchronized version
+assign new_chirp_frame = tx_new_chirp_frame_sync;    // Use CDC-synchronized version
 
 assign dbg_doppler_data = rx_doppler_output;
 assign dbg_doppler_valid = rx_doppler_valid;
@@ -402,7 +448,7 @@ always @(posedge clk_100m_buf or negedge sys_reset_n) begin
         status_reg[0] <= stm32_mixers_enable;      // Mixers enabled
         status_reg[1] <= ft601_txe;                 // USB TX ready
         status_reg[2] <= rx_doppler_valid;          // Data valid
-        status_reg[3] <= tx_new_chirp_frame;        // New chirp frame
+        status_reg[3] <= tx_new_chirp_frame_sync;   // New chirp frame (CDC-sync'd)
     end
 end
 
@@ -420,7 +466,7 @@ reg [31:0] data_packet_counter;
 always @(posedge clk_100m_buf) begin
     debug_cycle_counter <= debug_cycle_counter + 1;
     
-    if (tx_new_chirp_frame) begin
+    if (tx_new_chirp_frame_sync) begin
         $display("[TOP] New chirp frame started at cycle %0d", debug_cycle_counter);
     end
     

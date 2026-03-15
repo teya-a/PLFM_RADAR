@@ -58,6 +58,57 @@ reg [31:0] data_buffer;
 reg [31:0] ft601_data_out;
 reg ft601_data_oe;  // Output enable for bidirectional data bus
 
+// ========== CDC INPUT SYNCHRONIZERS (clk domain -> ft601_clk_in domain) ==========
+// The valid signals arrive from clk_100m but the state machine runs on ft601_clk_in.
+// Even though both are 100 MHz, they are asynchronous clocks and need synchronization.
+
+// 2-stage synchronizers for valid signals
+reg [1:0] range_valid_sync;
+reg [1:0] doppler_valid_sync;
+reg [1:0] cfar_valid_sync;
+
+// Synchronized data captures (registered in ft601_clk_in domain)
+reg [31:0] range_profile_cap;
+reg [15:0] doppler_real_cap;
+reg [15:0] doppler_imag_cap;
+reg cfar_detection_cap;
+
+wire range_valid_ft;
+wire doppler_valid_ft;
+wire cfar_valid_ft;
+
+always @(posedge ft601_clk_in or negedge reset_n) begin
+    if (!reset_n) begin
+        range_valid_sync   <= 2'b00;
+        doppler_valid_sync <= 2'b00;
+        cfar_valid_sync    <= 2'b00;
+        range_profile_cap  <= 32'd0;
+        doppler_real_cap   <= 16'd0;
+        doppler_imag_cap   <= 16'd0;
+        cfar_detection_cap <= 1'b0;
+    end else begin
+        // Synchronize valid strobes
+        range_valid_sync   <= {range_valid_sync[0],   range_valid};
+        doppler_valid_sync <= {doppler_valid_sync[0], doppler_valid};
+        cfar_valid_sync    <= {cfar_valid_sync[0],    cfar_valid};
+
+        // Capture data on rising edge of synchronized valid
+        if (range_valid_sync[0] && !range_valid_sync[1])
+            range_profile_cap <= range_profile;
+        if (doppler_valid_sync[0] && !doppler_valid_sync[1]) begin
+            doppler_real_cap <= doppler_real;
+            doppler_imag_cap <= doppler_imag;
+        end
+        if (cfar_valid_sync[0] && !cfar_valid_sync[1])
+            cfar_detection_cap <= cfar_detection;
+    end
+end
+
+// Rising-edge detect on synchronized valid (pulse in ft601_clk_in domain)
+assign range_valid_ft   = range_valid_sync[0]   && !range_valid_sync[1];
+assign doppler_valid_ft = doppler_valid_sync[0]  && !doppler_valid_sync[1];
+assign cfar_valid_ft    = cfar_valid_sync[0]     && !cfar_valid_sync[1];
+
 // FT601 data bus direction control
 assign ft601_data = ft601_data_oe ? ft601_data_out : 32'hzzzz_zzzz;
 
@@ -74,13 +125,14 @@ always @(posedge ft601_clk_in or negedge reset_n) begin
         ft601_rd_n <= 1;
         ft601_oe_n <= 1;
         ft601_siwu_n <= 1;
-        ft601_clk_out <= 0;
+        // NOTE: ft601_clk_out is driven by the clk-domain always block below.
+        // Do NOT assign it here (ft601_clk_in domain) — causes multi-driven net.
     end else begin
         case (current_state)
             IDLE: begin
                 ft601_wr_n <= 1;
                 ft601_data_oe <= 0;  // Release data bus
-                if (range_valid || doppler_valid || cfar_valid) begin
+                if (range_valid_ft || doppler_valid_ft || cfar_valid_ft) begin
                     current_state <= SEND_HEADER;
                     byte_counter <= 0;
                 end
@@ -102,10 +154,10 @@ always @(posedge ft601_clk_in or negedge reset_n) begin
                     ft601_be <= 2'b11;  // All bytes valid for 32-bit word
                     
                     case (byte_counter)
-                        0: ft601_data_out <= range_profile;
-                        1: ft601_data_out <= {range_profile[23:0], 8'h00};
-                        2: ft601_data_out <= {range_profile[15:0], 16'h0000};
-                        3: ft601_data_out <= {range_profile[7:0], 24'h000000};
+                        0: ft601_data_out <= range_profile_cap;
+                        1: ft601_data_out <= {range_profile_cap[23:0], 8'h00};
+                        2: ft601_data_out <= {range_profile_cap[15:0], 16'h0000};
+                        3: ft601_data_out <= {range_profile_cap[7:0], 24'h000000};
                     endcase
                     
                     ft601_wr_n <= 0;
@@ -120,15 +172,15 @@ always @(posedge ft601_clk_in or negedge reset_n) begin
             end
             
             SEND_DOPPLER_DATA: begin
-                if (!ft601_txe && doppler_valid) begin
+                if (!ft601_txe && doppler_valid_ft) begin
                     ft601_data_oe <= 1;
                     ft601_be <= 2'b11;
                     
                     case (byte_counter)
-                        0: ft601_data_out <= {doppler_real, doppler_imag};
-                        1: ft601_data_out <= {doppler_imag, doppler_real[15:8], 8'h00};
-                        2: ft601_data_out <= {doppler_real[7:0], doppler_imag[15:8], 16'h0000};
-                        3: ft601_data_out <= {doppler_imag[7:0], 24'h000000};
+                        0: ft601_data_out <= {doppler_real_cap, doppler_imag_cap};
+                        1: ft601_data_out <= {doppler_imag_cap, doppler_real_cap[15:8], 8'h00};
+                        2: ft601_data_out <= {doppler_real_cap[7:0], doppler_imag_cap[15:8], 16'h0000};
+                        3: ft601_data_out <= {doppler_imag_cap[7:0], 24'h000000};
                     endcase
                     
                     ft601_wr_n <= 0;
@@ -143,10 +195,10 @@ always @(posedge ft601_clk_in or negedge reset_n) begin
             end
             
             SEND_DETECTION_DATA: begin
-                if (!ft601_txe && cfar_valid) begin
+                if (!ft601_txe && cfar_valid_ft) begin
                     ft601_data_oe <= 1;
                     ft601_be <= 2'b01;
-                    ft601_data_out <= {24'b0, 7'b0, cfar_detection};
+                    ft601_data_out <= {24'b0, 7'b0, cfar_detection_cap};
                     ft601_wr_n <= 0;
                     current_state <= SEND_FOOTER;
                 end
