@@ -183,8 +183,12 @@ always @(posedge clk) begin
 end
 
 // ----------------------------------------------------------
-// Main FSM — async reset for control registers only.
-// Memory arrays are NOT touched here.
+// Block 1: FSM / Control — async reset (posedge clk or negedge reset_n).
+// Only state-machine and control registers live here.
+// BRAM-driving and DSP datapath registers are intentionally
+// excluded to avoid Vivado REQP-1839 (async-reset on BRAM
+// address) and DPOR-1/DPIP-1 (async-reset blocking DSP48
+// absorption) DRC warnings.
 // ----------------------------------------------------------
 always @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
@@ -203,21 +207,13 @@ always @(posedge clk or negedge reset_n) begin
         status <= 0;
         chirps_received <= 0;
         chirp_state <= 0;
-        mem_we <= 0;
-        mem_waddr_r <= 0;
-        mem_wdata_i <= 0;
-        mem_wdata_q <= 0;
-        mult_i <= 0;
-        mult_q <= 0;
-        fft_input_i <= 0;
-        fft_input_q <= 0;
         doppler_output <= 0;
         doppler_bin <= 0;
+        range_bin <= 0;
     end else begin
         doppler_valid <= 0;
         fft_input_valid <= 0;
         fft_input_last <= 0;
-        mem_we <= 0;
         
         if (processing_timeout > 0) begin
             processing_timeout <= processing_timeout - 1;
@@ -235,25 +231,12 @@ always @(posedge clk or negedge reset_n) begin
                 
                 if (data_valid && !frame_buffer_full) begin
                     state <= S_ACCUMULATE;
-                    // Write the first sample immediately (Bug #3 fix:
-                    // previously this transition consumed data_valid
-                    // without writing to BRAM)
-                    mem_we      <= 1;
-                    mem_waddr_r <= mem_write_addr;
-                    mem_wdata_i <= range_data[15:0];
-                    mem_wdata_q <= range_data[31:16];
                     write_range_bin <= 1;
                 end
             end
             
             S_ACCUMULATE: begin
                 if (data_valid) begin
-                    // Drive memory write signals (actual write in separate block)
-                    mem_we      <= 1;
-                    mem_waddr_r <= mem_write_addr;
-                    mem_wdata_i <= range_data[15:0];
-                    mem_wdata_q <= range_data[31:16];
-                    
                     // Increment range bin
                     if (write_range_bin < RANGE_BINS - 1) begin
                         write_range_bin <= write_range_bin + 1;
@@ -330,10 +313,7 @@ always @(posedge clk or negedge reset_n) begin
 
                 if (fft_sample_counter == 0) begin
                     // Sub 0: pre-multiply.  mem_rdata_i = data[chirp=0][rbin].
-                    mult_i <= $signed(mem_rdata_i) *
-                                   $signed(window_coeff[0]);
-                    mult_q <= $signed(mem_rdata_q) *
-                                   $signed(window_coeff[0]);
+                    // (mult_i/mult_q computed in Block 2)
                     // Present BRAM addr for chirp 2 (sub=1 reads chirp 1
                     // from the BRAM read we triggered in S_PRE_READ;
                     // we need chirp 2 ready for sub=2).
@@ -342,9 +322,7 @@ always @(posedge clk or negedge reset_n) begin
                     fft_sample_counter <= 1;
                 end else if (fft_sample_counter <= DOPPLER_FFT_SIZE) begin
                     // Sub 1..32
-                    // Capture previous mult into fft_input
-                    fft_input_i <= (mult_i + (1 << 14)) >>> 15;
-                    fft_input_q <= (mult_q + (1 << 14)) >>> 15;
+                    // (fft_input_i/fft_input_q captured in Block 2)
                     fft_input_valid <= 1;
 
                     if (fft_sample_counter == DOPPLER_FFT_SIZE) begin
@@ -358,11 +336,7 @@ always @(posedge clk or negedge reset_n) begin
                         read_doppler_index <= 0;
                     end else begin
                         // Sub 1..31: also compute new mult from current BRAM data
-                        // mem_rdata_i = data[chirp = fft_sample_counter][rbin]
-                        mult_i <= $signed(mem_rdata_i) *
-                                       $signed(window_coeff[fft_sample_counter]);
-                        mult_q <= $signed(mem_rdata_q) *
-                                       $signed(window_coeff[fft_sample_counter]);
+                        // (mult_i/mult_q computed in Block 2)
                         // Advance BRAM read to chirp fft_sample_counter+2
                         // (so data is ready two cycles later when we need it)
                         // Clamp to DOPPLER_FFT_SIZE-1 to prevent OOB memory read
@@ -410,6 +384,82 @@ always @(posedge clk or negedge reset_n) begin
         endcase
         
         status <= {state, frame_buffer_full};
+    end
+end
+
+// ----------------------------------------------------------
+// Block 2: BRAM address/data & DSP datapath — synchronous reset only.
+// Uses always @(posedge clk) so Vivado can absorb multipliers
+// into DSP48 primitives and does not flag REQP-1839/1840 on
+// BRAM address registers.  Replicates the same state/condition
+// structure as Block 1 for the eight registers:
+//   mem_we, mem_waddr_r, mem_wdata_i, mem_wdata_q,
+//   mult_i, mult_q, fft_input_i, fft_input_q
+// ----------------------------------------------------------
+always @(posedge clk) begin
+    if (!reset_n) begin
+        mem_we      <= 0;
+        mem_waddr_r <= 0;
+        mem_wdata_i <= 0;
+        mem_wdata_q <= 0;
+        mult_i      <= 0;
+        mult_q      <= 0;
+        fft_input_i <= 0;
+        fft_input_q <= 0;
+    end else begin
+        mem_we <= 0;
+        
+        case (state)
+            S_IDLE: begin
+                if (data_valid && !frame_buffer_full) begin
+                    // Write the first sample immediately (Bug #3 fix:
+                    // previously this transition consumed data_valid
+                    // without writing to BRAM)
+                    mem_we      <= 1;
+                    mem_waddr_r <= mem_write_addr;
+                    mem_wdata_i <= range_data[15:0];
+                    mem_wdata_q <= range_data[31:16];
+                end
+            end
+            
+            S_ACCUMULATE: begin
+                if (data_valid) begin
+                    // Drive memory write signals (actual write in separate block)
+                    mem_we      <= 1;
+                    mem_waddr_r <= mem_write_addr;
+                    mem_wdata_i <= range_data[15:0];
+                    mem_wdata_q <= range_data[31:16];
+                end
+            end
+            
+            S_LOAD_FFT: begin
+                if (fft_sample_counter == 0) begin
+                    // Sub 0: pre-multiply.  mem_rdata_i = data[chirp=0][rbin].
+                    mult_i <= $signed(mem_rdata_i) *
+                                   $signed(window_coeff[0]);
+                    mult_q <= $signed(mem_rdata_q) *
+                                   $signed(window_coeff[0]);
+                end else if (fft_sample_counter <= DOPPLER_FFT_SIZE) begin
+                    // Sub 1..32: capture previous mult into fft_input
+                    fft_input_i <= (mult_i + (1 << 14)) >>> 15;
+                    fft_input_q <= (mult_q + (1 << 14)) >>> 15;
+
+                    if (fft_sample_counter < DOPPLER_FFT_SIZE) begin
+                        // Sub 1..31: also compute new mult from current BRAM data
+                        // mem_rdata_i = data[chirp = fft_sample_counter][rbin]
+                        mult_i <= $signed(mem_rdata_i) *
+                                       $signed(window_coeff[fft_sample_counter]);
+                        mult_q <= $signed(mem_rdata_q) *
+                                       $signed(window_coeff[fft_sample_counter]);
+                    end
+                end
+            end
+
+            default: begin
+                // S_PRE_READ, S_FFT_WAIT, S_OUTPUT:
+                // no BRAM-write or DSP operations needed
+            end
+        endcase
     end
 end
 

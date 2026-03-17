@@ -109,8 +109,9 @@ end
 // ============================================================================
 // Pipeline Stage 1 (Level 0): Register 16 pairwise sums of 32 multiply results
 // Each addition is a single 36-bit add — one DSP48E1 hop (~1.7ns), fits 10ns.
+// Sync reset enables DSP48E1 absorption (fixes DPOR-1 warnings)
 // ============================================================================
-always @(posedge clk or negedge reset_n) begin
+always @(posedge clk) begin
     if (!reset_n) begin
         for (i = 0; i < 16; i = i + 1) begin
             add_l0[i] <= 0;
@@ -128,8 +129,9 @@ end
 
 // ============================================================================
 // Pipeline Stage 2 (Level 1): 8 pairwise sums of 16 Level-0 results
+// Sync reset enables DSP48E1 absorption (fixes DPOR-1 warnings)
 // ============================================================================
-always @(posedge clk or negedge reset_n) begin
+always @(posedge clk) begin
     if (!reset_n) begin
         for (i = 0; i < 8; i = i + 1) begin
             add_l1[i] <= 0;
@@ -143,8 +145,9 @@ end
 
 // ============================================================================
 // Pipeline Stage 3 (Level 2): 4 pairwise sums of 8 Level-1 results
+// Sync reset enables DSP48E1 absorption (fixes DPOR-1 warnings)
 // ============================================================================
-always @(posedge clk or negedge reset_n) begin
+always @(posedge clk) begin
     if (!reset_n) begin
         for (i = 0; i < 4; i = i + 1) begin
             add_l2[i] <= 0;
@@ -158,8 +161,9 @@ end
 
 // ============================================================================
 // Pipeline Stage 4 (Level 3): 2 pairwise sums of 4 Level-2 results
+// Sync reset enables DSP48E1 absorption (fixes DPOR-1 warnings)
 // ============================================================================
-always @(posedge clk or negedge reset_n) begin
+always @(posedge clk) begin
     if (!reset_n) begin
         add_l3[0] <= 0;
         add_l3[1] <= 0;
@@ -171,8 +175,9 @@ end
 
 // ============================================================================
 // Pipeline Stage 5 (Level 4): Final sum of 2 Level-3 results
+// Sync reset enables DSP48E1 absorption (fixes DPOR-1 warnings)
 // ============================================================================
-always @(posedge clk or negedge reset_n) begin
+always @(posedge clk) begin
     if (!reset_n) begin
         accumulator_reg <= 0;
     end else if (valid_pipe[4]) begin
@@ -182,8 +187,9 @@ end
 
 // ============================================================================
 // Pipeline Stage 6: Output saturation/rounding (registered)
+// Sync reset enables DSP48E1 absorption (fixes DPOR-1 warnings)
 // ============================================================================
-always @(posedge clk or negedge reset_n) begin
+always @(posedge clk) begin
     if (!reset_n) begin
         data_out <= 0;
         data_out_valid <= 0;
@@ -206,8 +212,9 @@ end
 
 // ============================================================================
 // Valid pipeline shift register
+// Sync reset — no DSP48 involvement but keeps reset style consistent with datapath
 // ============================================================================
-always @(posedge clk or negedge reset_n) begin
+always @(posedge clk) begin
     if (!reset_n) begin
         valid_pipe <= 7'b0000000;
     end else begin
