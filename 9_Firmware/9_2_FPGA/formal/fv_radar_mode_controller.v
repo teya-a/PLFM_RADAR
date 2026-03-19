@@ -66,6 +66,14 @@ module fv_radar_mode_controller (
     (* anyseq *) wire       stm32_new_azimuth;
     (* anyseq *) wire       trigger;
 
+    // Gap 2: Formal cfg_* inputs — solver-driven for exhaustive coverage
+    (* anyseq *) wire [15:0] cfg_long_chirp_cycles;
+    (* anyseq *) wire [15:0] cfg_long_listen_cycles;
+    (* anyseq *) wire [15:0] cfg_guard_cycles;
+    (* anyseq *) wire [15:0] cfg_short_chirp_cycles;
+    (* anyseq *) wire [15:0] cfg_short_listen_cycles;
+    (* anyseq *) wire [5:0]  cfg_chirps_per_elev;
+
     // ================================================================
     // DUT outputs
     // ================================================================
@@ -101,6 +109,13 @@ module fv_radar_mode_controller (
         .stm32_new_elevation(stm32_new_elevation),
         .stm32_new_azimuth  (stm32_new_azimuth),
         .trigger            (trigger),
+        // Gap 2: Runtime-configurable timing inputs
+        .cfg_long_chirp_cycles  (cfg_long_chirp_cycles),
+        .cfg_long_listen_cycles (cfg_long_listen_cycles),
+        .cfg_guard_cycles       (cfg_guard_cycles),
+        .cfg_short_chirp_cycles (cfg_short_chirp_cycles),
+        .cfg_short_listen_cycles(cfg_short_listen_cycles),
+        .cfg_chirps_per_elev    (cfg_chirps_per_elev),
         .use_long_chirp     (use_long_chirp),
         .mc_new_chirp       (mc_new_chirp),
         .mc_new_elevation   (mc_new_elevation),

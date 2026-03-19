@@ -24,10 +24,18 @@ module radar_receiver_final (
     output wire signed [15:0] range_profile_q_out,
     output wire range_profile_valid_out,
     
-    // Host command inputs (Gap 4: USB Read Path)
+    // Host command inputs (Gap 4: USB Read Path, CDC-synchronized)
     // CDC-synchronized in radar_system_top.v before reaching here
     input wire [1:0] host_mode,      // Radar mode: 00=STM32, 01=auto-scan, 10=single-chirp
-    input wire host_trigger           // Single-chirp trigger pulse (1 clk cycle)
+    input wire host_trigger,          // Single-chirp trigger pulse (1 clk cycle)
+
+    // Gap 2: Host-configurable chirp timing (CDC-synchronized in radar_system_top.v)
+    input wire [15:0] host_long_chirp_cycles,
+    input wire [15:0] host_long_listen_cycles,
+    input wire [15:0] host_guard_cycles,
+    input wire [15:0] host_short_chirp_cycles,
+    input wire [15:0] host_short_listen_cycles,
+    input wire [5:0]  host_chirps_per_elev
 );
 
 // ========== INTERNAL SIGNALS ==========
@@ -91,6 +99,13 @@ radar_mode_controller rmc (
     .stm32_new_elevation(1'b0),       // Unused in auto mode
     .stm32_new_azimuth(1'b0),         // Unused in auto mode
     .trigger(host_trigger),           // Single-chirp trigger from host via USB
+    // Gap 2: Runtime-configurable timing from host USB commands
+    .cfg_long_chirp_cycles(host_long_chirp_cycles),
+    .cfg_long_listen_cycles(host_long_listen_cycles),
+    .cfg_guard_cycles(host_guard_cycles),
+    .cfg_short_chirp_cycles(host_short_chirp_cycles),
+    .cfg_short_listen_cycles(host_short_listen_cycles),
+    .cfg_chirps_per_elev(host_chirps_per_elev),
     .use_long_chirp(use_long_chirp),
     .mc_new_chirp(mc_new_chirp),
     .mc_new_elevation(mc_new_elevation),

@@ -191,6 +191,18 @@ reg        host_trigger_pulse;
 reg [15:0] host_cfar_threshold;
 reg [2:0]  host_stream_control;
 
+// Gap 2: Host-configurable chirp timing registers
+// These override the compile-time defaults in radar_mode_controller when
+// written via USB command. Defaults match the parameter values in
+// radar_mode_controller.v so behavior is unchanged until the host writes them.
+reg [15:0] host_long_chirp_cycles;    // Opcode 0x10 (default 3000)
+reg [15:0] host_long_listen_cycles;   // Opcode 0x11 (default 13700)
+reg [15:0] host_guard_cycles;         // Opcode 0x12 (default 17540)
+reg [15:0] host_short_chirp_cycles;   // Opcode 0x13 (default 50)
+reg [15:0] host_short_listen_cycles;  // Opcode 0x14 (default 17450)
+reg [5:0]  host_chirps_per_elev;      // Opcode 0x15 (default 32)
+reg        host_status_request;       // Opcode 0xFF (self-clearing pulse)
+
 // ============================================================================
 // CLOCK BUFFERING
 // ============================================================================
@@ -426,7 +438,14 @@ radar_receiver_final rx_inst (
     
     // Host command inputs (Gap 4: USB Read Path, CDC-synchronized)
     .host_mode(host_radar_mode),
-    .host_trigger(host_trigger_pulse)
+    .host_trigger(host_trigger_pulse),
+    // Gap 2: Host-configurable chirp timing
+    .host_long_chirp_cycles(host_long_chirp_cycles),
+    .host_long_listen_cycles(host_long_listen_cycles),
+    .host_guard_cycles(host_guard_cycles),
+    .host_short_chirp_cycles(host_short_chirp_cycles),
+    .host_short_listen_cycles(host_short_listen_cycles),
+    .host_chirps_per_elev(host_chirps_per_elev)
 );
 
 // ============================================================================
@@ -458,8 +477,8 @@ always @(posedge clk_100m_buf or negedge sys_reset_n) begin
             cfar_mag <= (rx_doppler_real[15] ? -rx_doppler_real : rx_doppler_real) +
                         (rx_doppler_imag[15] ? -rx_doppler_imag : rx_doppler_imag);
             
-            // Threshold detection
-            if (cfar_mag > 17'd10000) begin
+            // Threshold detection (Gap 2: uses host-configurable threshold)
+            if (cfar_mag > {1'b0, host_cfar_threshold}) begin
                 rx_cfar_detection <= 1'b1;
                 rx_cfar_valid <= 1'b1;
                 cfar_counter <= cfar_counter + 1;
@@ -522,7 +541,22 @@ usb_data_interface usb_inst (
     .cmd_valid(usb_cmd_valid),
     .cmd_opcode(usb_cmd_opcode),
     .cmd_addr(usb_cmd_addr),
-    .cmd_value(usb_cmd_value)
+    .cmd_value(usb_cmd_value),
+
+    // Gap 2: Stream control (clk_100m domain, CDC'd inside usb_data_interface)
+    .stream_control(host_stream_control),
+
+    // Gap 2: Status readback inputs
+    .status_request(host_status_request),
+    .status_cfar_threshold(host_cfar_threshold),
+    .status_stream_ctrl(host_stream_control),
+    .status_radar_mode(host_radar_mode),
+    .status_long_chirp(host_long_chirp_cycles),
+    .status_long_listen(host_long_listen_cycles),
+    .status_guard(host_guard_cycles),
+    .status_short_chirp(host_short_chirp_cycles),
+    .status_short_listen(host_short_listen_cycles),
+    .status_chirps_per_elev(host_chirps_per_elev)
 );
 
 // ============================================================================
@@ -577,15 +611,32 @@ always @(posedge clk_100m_buf or negedge sys_reset_n) begin
         host_trigger_pulse <= 1'b0;
         host_cfar_threshold <= 16'd10000; // Default threshold
         host_stream_control <= 3'b111;    // Default: all streams enabled
+        // Gap 2: chirp timing defaults (match radar_mode_controller parameters)
+        host_long_chirp_cycles  <= 16'd3000;
+        host_long_listen_cycles <= 16'd13700;
+        host_guard_cycles       <= 16'd17540;
+        host_short_chirp_cycles <= 16'd50;
+        host_short_listen_cycles <= 16'd17450;
+        host_chirps_per_elev    <= 6'd32;
+        host_status_request     <= 1'b0;
     end else begin
         host_trigger_pulse <= 1'b0;    // Self-clearing pulse
+        host_status_request <= 1'b0;   // Self-clearing pulse
         if (cmd_valid_100m) begin
             case (usb_cmd_opcode)
                 8'h01: host_radar_mode     <= usb_cmd_value[1:0];
                 8'h02: host_trigger_pulse  <= 1'b1;
                 8'h03: host_cfar_threshold <= usb_cmd_value;
                 8'h04: host_stream_control <= usb_cmd_value[2:0];
-                default: ; // 0xFF status request handled elsewhere
+                // Gap 2: chirp timing configuration
+                8'h10: host_long_chirp_cycles  <= usb_cmd_value;
+                8'h11: host_long_listen_cycles <= usb_cmd_value;
+                8'h12: host_guard_cycles       <= usb_cmd_value;
+                8'h13: host_short_chirp_cycles <= usb_cmd_value;
+                8'h14: host_short_listen_cycles <= usb_cmd_value;
+                8'h15: host_chirps_per_elev    <= usb_cmd_value[5:0];
+                8'hFF: host_status_request     <= 1'b1;  // Gap 2: status readback
+                default: ;
             endcase
         end
     end

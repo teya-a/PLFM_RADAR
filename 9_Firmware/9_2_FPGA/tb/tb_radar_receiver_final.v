@@ -132,7 +132,24 @@ radar_receiver_final dut (
     .doppler_output(doppler_output),
     .doppler_valid(doppler_valid),
     .doppler_bin(doppler_bin),
-    .range_bin(range_bin_out)
+    .range_bin(range_bin_out),
+
+    // Range profile outputs (unused in this TB)
+    .range_profile_i_out(),
+    .range_profile_q_out(),
+    .range_profile_valid_out(),
+
+    // Host command inputs (Gap 4) — default auto-scan, no trigger
+    .host_mode(2'b01),
+    .host_trigger(1'b0),
+
+    // Gap 2: Host-configurable chirp timing — match defparam overrides below
+    .host_long_chirp_cycles(16'd500),
+    .host_long_listen_cycles(16'd2000),
+    .host_guard_cycles(16'd500),
+    .host_short_chirp_cycles(16'd50),
+    .host_short_listen_cycles(16'd1000),
+    .host_chirps_per_elev(6'd32)
 );
 
 // ============================================================================

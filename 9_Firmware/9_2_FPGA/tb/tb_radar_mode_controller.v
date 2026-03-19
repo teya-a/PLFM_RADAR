@@ -26,6 +26,14 @@ module tb_radar_mode_controller;
     reg         stm32_new_azimuth;
     reg         trigger;
 
+    // Gap 2: Runtime-configurable timing inputs
+    reg  [15:0] cfg_long_chirp_cycles;
+    reg  [15:0] cfg_long_listen_cycles;
+    reg  [15:0] cfg_guard_cycles;
+    reg  [15:0] cfg_short_chirp_cycles;
+    reg  [15:0] cfg_short_listen_cycles;
+    reg  [5:0]  cfg_chirps_per_elev;
+
     wire        use_long_chirp;
     wire        mc_new_chirp;
     wire        mc_new_elevation;
@@ -78,6 +86,14 @@ module tb_radar_mode_controller;
         .stm32_new_elevation(stm32_new_elevation),
         .stm32_new_azimuth  (stm32_new_azimuth),
         .trigger            (trigger),
+        // Gap 2: Runtime-configurable timing inputs
+        .cfg_long_chirp_cycles  (cfg_long_chirp_cycles),
+        .cfg_long_listen_cycles (cfg_long_listen_cycles),
+        .cfg_guard_cycles       (cfg_guard_cycles),
+        .cfg_short_chirp_cycles (cfg_short_chirp_cycles),
+        .cfg_short_listen_cycles(cfg_short_listen_cycles),
+        .cfg_chirps_per_elev    (cfg_chirps_per_elev),
+        // Outputs
         .use_long_chirp     (use_long_chirp),
         .mc_new_chirp       (mc_new_chirp),
         .mc_new_elevation   (mc_new_elevation),
@@ -114,6 +130,13 @@ module tb_radar_mode_controller;
             stm32_new_elevation = 0;
             stm32_new_azimuth   = 0;
             trigger             = 0;
+            // Gap 2: Set cfg_* to simulation parameter defaults
+            cfg_long_chirp_cycles  = SIM_LONG_CHIRP;
+            cfg_long_listen_cycles = SIM_LONG_LISTEN;
+            cfg_guard_cycles       = SIM_GUARD;
+            cfg_short_chirp_cycles = SIM_SHORT_CHIRP;
+            cfg_short_listen_cycles = SIM_SHORT_LISTEN;
+            cfg_chirps_per_elev    = SIM_CHIRPS;
             repeat (4) @(posedge clk);
             reset_n = 1;
             @(posedge clk); #1;
@@ -628,6 +651,80 @@ module tb_radar_mode_controller;
 
         $display("  chirp_count after 4th toggle: %0d (expect 0)", chirp_count);
         check(chirp_count === 6'd0, "Persistence: chirp_count wraps to 0 at 4th toggle");
+
+        // ════════════════════════════════════════════════════════
+        // TEST GROUP 16: Runtime Timing Reconfiguration (Gap 2)
+        // Verify that changing cfg_* mid-simulation changes timing.
+        // We halve the long chirp duration and verify the chirp
+        // completes in fewer cycles.
+        // ════════════════════════════════════════════════════════
+        $display("\n--- Test Group 16: Runtime Timing Reconfiguration (Gap 2) ---");
+        apply_reset;
+        mode = 2'b01;  // auto-scan
+
+        // Let the first chirp start (S_IDLE -> S_LONG_CHIRP)
+        @(posedge clk); #1;
+        check(scanning === 1'b1, "Reconfig: auto-scan started");
+        check(use_long_chirp === 1'b1, "Reconfig: starts with long chirp");
+
+        // Wait ~half the default long chirp time to confirm we're still in S_LONG_CHIRP
+        repeat (SIM_LONG_CHIRP / 2) @(posedge clk); #1;
+        check(uut.scan_state === 3'd1, "Reconfig: still in S_LONG_CHIRP at midpoint");
+
+        // Now change cfg_long_chirp_cycles to a much shorter value mid-scan.
+        // The timer is already at ~SIM_LONG_CHIRP/2, so setting cycles to
+        // (SIM_LONG_CHIRP/2 - 2) means the timer already exceeds the new limit
+        // and the FSM will advance on the next cycle.
+        cfg_long_chirp_cycles = SIM_LONG_CHIRP / 2 - 2;
+        repeat (2) @(posedge clk); #1;
+        // The FSM should have transitioned past S_LONG_CHIRP
+        check(uut.scan_state !== 3'd1, "Reconfig: FSM left S_LONG_CHIRP after shortening cycles");
+
+        // Restore default and verify scan continues
+        cfg_long_chirp_cycles = SIM_LONG_CHIRP;
+        repeat (10) @(posedge clk); #1;
+        check(scanning === 1'b1, "Reconfig: scan continues after restoring default");
+
+        // Test runtime chirps_per_elev change:
+        // Reset and set chirps_per_elev to 2 (instead of default 4)
+        apply_reset;
+        cfg_chirps_per_elev = 6'd2;
+        mode = 2'b01;  // auto-scan
+
+        mc_new_chirp_prev = 0;
+        chirp_toggles = 0;
+        elevation_toggles = 0;
+
+        @(posedge clk); #1;
+        mc_new_chirp_prev = mc_new_chirp;
+        mc_new_elevation_prev = mc_new_elevation;
+        chirp_toggles = 1;  // initial toggle
+
+        // Run enough cycles for a few chirps + elevation advance
+        // With 2 chirps/elev: each chirp ~342 cycles (30+137+175+5+175)
+        // 2 chirps = ~684 cycles, then elevation advance
+        for (i = 0; i < 2000; i = i + 1) begin
+            @(posedge clk); #1;
+            if (mc_new_chirp !== mc_new_chirp_prev)
+                chirp_toggles = chirp_toggles + 1;
+            if (mc_new_elevation !== mc_new_elevation_prev)
+                elevation_toggles = elevation_toggles + 1;
+            mc_new_chirp_prev = mc_new_chirp;
+            mc_new_elevation_prev = mc_new_elevation;
+        end
+
+        $display("  chirp_toggles=%0d elevation_toggles=%0d (cfg_chirps_per_elev=2)",
+                 chirp_toggles, elevation_toggles);
+        // With 2 chirps/elev, we should get elevation toggles at every 2 chirps
+        check(elevation_toggles >= 1,
+              "Reconfig: elevation advances with cfg_chirps_per_elev=2");
+        // Verify the ratio: chirp_toggles should be ~2x elevation_toggles
+        // (first elevation has 2 chirps, then toggle. Second has 2 chirps, then toggle, etc.)
+        check(chirp_toggles >= 2 * elevation_toggles,
+              "Reconfig: chirp/elevation ratio consistent with cfg_chirps_per_elev=2");
+
+        // Restore defaults
+        cfg_chirps_per_elev = SIM_CHIRPS;
 
         // ════════════════════════════════════════════════════════
         // Summary

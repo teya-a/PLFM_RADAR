@@ -61,6 +61,17 @@ module radar_mode_controller #(
     // Single-chirp trigger (active in mode 10)
     input wire trigger,
 
+    // Gap 2: Runtime-configurable timing inputs from host USB commands.
+    // When connected, these override the compile-time parameters.
+    // When left at default (tied to parameter values at instantiation),
+    // behavior is identical to pre-Gap-2.
+    input wire [15:0] cfg_long_chirp_cycles,
+    input wire [15:0] cfg_long_listen_cycles,
+    input wire [15:0] cfg_guard_cycles,
+    input wire [15:0] cfg_short_chirp_cycles,
+    input wire [15:0] cfg_short_listen_cycles,
+    input wire [5:0]  cfg_chirps_per_elev,
+
     // Outputs to receiver processing chain
     output reg use_long_chirp,
     output reg mc_new_chirp,
@@ -173,8 +184,8 @@ always @(posedge clk or negedge reset_n) begin
                 mc_new_chirp <= ~mc_new_chirp;  // Toggle output
                 use_long_chirp <= 1'b1;         // Default to long chirp
 
-                // Track chirp count
-                if (chirp_count < CHIRPS_PER_ELEVATION - 1)
+                // Track chirp count (Gap 2: use runtime cfg_chirps_per_elev)
+                if (chirp_count < cfg_chirps_per_elev - 1)
                     chirp_count <= chirp_count + 1;
                 else
                     chirp_count <= 6'd0;
@@ -226,7 +237,7 @@ always @(posedge clk or negedge reset_n) begin
 
             S_LONG_CHIRP: begin
                 use_long_chirp <= 1'b1;
-                if (timer < LONG_CHIRP_CYCLES - 1)
+                if (timer < cfg_long_chirp_cycles - 1)
                     timer <= timer + 1;
                 else begin
                     timer <= 18'd0;
@@ -235,7 +246,7 @@ always @(posedge clk or negedge reset_n) begin
             end
 
             S_LONG_LISTEN: begin
-                if (timer < LONG_LISTEN_CYCLES - 1)
+                if (timer < cfg_long_listen_cycles - 1)
                     timer <= timer + 1;
                 else begin
                     timer <= 18'd0;
@@ -244,7 +255,7 @@ always @(posedge clk or negedge reset_n) begin
             end
 
             S_GUARD: begin
-                if (timer < GUARD_CYCLES - 1)
+                if (timer < cfg_guard_cycles - 1)
                     timer <= timer + 1;
                 else begin
                     timer <= 18'd0;
@@ -255,7 +266,7 @@ always @(posedge clk or negedge reset_n) begin
 
             S_SHORT_CHIRP: begin
                 use_long_chirp <= 1'b0;
-                if (timer < SHORT_CHIRP_CYCLES - 1)
+                if (timer < cfg_short_chirp_cycles - 1)
                     timer <= timer + 1;
                 else begin
                     timer <= 18'd0;
@@ -264,7 +275,7 @@ always @(posedge clk or negedge reset_n) begin
             end
 
             S_SHORT_LISTEN: begin
-                if (timer < SHORT_LISTEN_CYCLES - 1)
+                if (timer < cfg_short_listen_cycles - 1)
                     timer <= timer + 1;
                 else begin
                     timer <= 18'd0;
@@ -274,7 +285,8 @@ always @(posedge clk or negedge reset_n) begin
 
             S_ADVANCE: begin
                 // Advance chirp/elevation/azimuth counters
-                if (chirp_count < CHIRPS_PER_ELEVATION - 1) begin
+                // (Gap 2: use runtime cfg_chirps_per_elev)
+                if (chirp_count < cfg_chirps_per_elev - 1) begin
                     // Next chirp in current elevation
                     chirp_count  <= chirp_count + 1;
                     mc_new_chirp <= ~mc_new_chirp;
@@ -339,7 +351,7 @@ always @(posedge clk or negedge reset_n) begin
             end
 
             S_LONG_CHIRP: begin
-                if (timer < LONG_CHIRP_CYCLES - 1)
+                if (timer < cfg_long_chirp_cycles - 1)
                     timer <= timer + 1;
                 else begin
                     timer <= 18'd0;
@@ -348,7 +360,7 @@ always @(posedge clk or negedge reset_n) begin
             end
 
             S_LONG_LISTEN: begin
-                if (timer < LONG_LISTEN_CYCLES - 1)
+                if (timer < cfg_long_listen_cycles - 1)
                     timer <= timer + 1;
                 else begin
                     // Single chirp done, return to idle

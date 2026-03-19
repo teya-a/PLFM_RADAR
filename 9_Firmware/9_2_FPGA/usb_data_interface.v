@@ -45,12 +45,33 @@ module usb_data_interface (
     //   0x02 = Single chirp trigger (value ignored, pulse cmd_valid)
     //   0x03 = Set CFAR threshold (value[15:0] -> threshold)
     //   0x04 = Set stream control (value[2:0] -> enable range/doppler/cfar)
+    //   0x10-0x15 = Chirp timing configuration (Gap 2)
     //   0xFF = Status request (triggers status response packet)
     output reg [31:0] cmd_data,      // Last received command word
     output reg cmd_valid,            // Pulse: new command received (ft601_clk domain)
     output reg [7:0] cmd_opcode,     // Decoded opcode for convenience
     output reg [7:0] cmd_addr,       // Decoded register address
-    output reg [15:0] cmd_value      // Decoded value
+    output reg [15:0] cmd_value,     // Decoded value
+
+    // Gap 2: Stream control input (clk_100m domain, CDC'd internally)
+    // Bit 0 = range stream enable
+    // Bit 1 = doppler stream enable
+    // Bit 2 = cfar/detection stream enable
+    input wire [2:0] stream_control,
+
+    // Gap 2: Status readback inputs (clk_100m domain, CDC'd internally)
+    // When status_request pulses, the write FSM sends a status response
+    // packet containing the current register values.
+    input wire status_request,                 // 1-cycle pulse in clk_100m when 0xFF received
+    input wire [15:0] status_cfar_threshold,   // Current CFAR threshold
+    input wire [2:0]  status_stream_ctrl,      // Current stream control
+    input wire [1:0]  status_radar_mode,       // Current radar mode
+    input wire [15:0] status_long_chirp,       // Current long chirp cycles
+    input wire [15:0] status_long_listen,      // Current long listen cycles
+    input wire [15:0] status_guard,            // Current guard cycles
+    input wire [15:0] status_short_chirp,      // Current short chirp cycles
+    input wire [15:0] status_short_listen,     // Current short listen cycles
+    input wire [5:0]  status_chirps_per_elev   // Current chirps per elevation
 );
 
 // USB packet structure (same as before)
@@ -70,7 +91,8 @@ localparam [2:0] IDLE                = 3'd0,
                  SEND_DOPPLER_DATA   = 3'd3,
                  SEND_DETECTION_DATA = 3'd4,
                  SEND_FOOTER         = 3'd5,
-                 WAIT_ACK            = 3'd6;
+                 WAIT_ACK            = 3'd6,
+                 SEND_STATUS         = 3'd7;  // Gap 2: status readback
 
 reg [2:0] current_state;
 reg [7:0] byte_counter;
@@ -123,6 +145,10 @@ reg [15:0] doppler_real_hold;
 reg [15:0] doppler_imag_hold;
 reg cfar_detection_hold;
 
+// Gap 2: Status request toggle register (clk_100m domain).
+// Declared here (before the always block) to satisfy iverilog forward-ref rules.
+reg status_req_toggle_100m;
+
 // Source-domain holding registers (clk domain)
 always @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
@@ -130,6 +156,7 @@ always @(posedge clk or negedge reset_n) begin
         doppler_real_hold  <= 16'd0;
         doppler_imag_hold  <= 16'd0;
         cfar_detection_hold <= 1'b0;
+        status_req_toggle_100m <= 1'b0;
     end else begin
         if (range_valid)
             range_profile_hold <= range_profile;
@@ -139,6 +166,9 @@ always @(posedge clk or negedge reset_n) begin
         end
         if (cfar_valid)
             cfar_detection_hold <= cfar_detection;
+        // Gap 2: Toggle on status request pulse (CDC to ft601_clk)
+        if (status_request)
+            status_req_toggle_100m <= ~status_req_toggle_100m;
     end
 end
 
@@ -147,6 +177,29 @@ reg [31:0] range_profile_cap;
 reg [15:0] doppler_real_cap;
 reg [15:0] doppler_imag_cap;
 reg cfar_detection_cap;
+
+// Gap 2: CDC for stream_control (clk_100m -> ft601_clk_in)
+// stream_control changes infrequently (only on host USB command), so
+// per-bit 2-stage synchronizers are sufficient. No Gray coding needed
+// because the bits are independent enables.
+(* ASYNC_REG = "TRUE" *) reg [2:0] stream_ctrl_sync_0;
+(* ASYNC_REG = "TRUE" *) reg [2:0] stream_ctrl_sync_1;
+wire stream_range_en   = stream_ctrl_sync_1[0];
+wire stream_doppler_en = stream_ctrl_sync_1[1];
+wire stream_cfar_en    = stream_ctrl_sync_1[2];
+
+// Gap 2: Status request CDC (toggle CDC, same pattern as cmd_valid)
+// status_request is a 1-cycle pulse in clk_100m. Toggle→sync→edge-detect.
+// NOTE: status_req_toggle_100m declared above (before source-domain always block)
+(* ASYNC_REG = "TRUE" *) reg [1:0] status_req_sync;
+reg status_req_sync_prev;
+wire status_req_ft601 = status_req_sync[1] ^ status_req_sync_prev;
+
+// Status snapshot: captured in ft601_clk domain when status request arrives.
+// The clk_100m-domain status inputs are stable for many cycles after the
+// command decode, so sampling them a few ft601_clk cycles later is safe.
+reg [31:0] status_words [0:4];  // 5 status words
+reg [2:0] status_word_idx;
 
 wire range_valid_ft;
 wire doppler_valid_ft;
@@ -164,11 +217,43 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
         doppler_real_cap   <= 16'd0;
         doppler_imag_cap   <= 16'd0;
         cfar_detection_cap <= 1'b0;
+        // Gap 2: stream control CDC reset (default all enabled)
+        stream_ctrl_sync_0 <= 3'b111;
+        stream_ctrl_sync_1 <= 3'b111;
+        // Gap 2: status request CDC reset
+        status_req_sync <= 2'b00;
+        status_req_sync_prev <= 1'b0;
+        status_word_idx <= 3'd0;
     end else begin
         // Synchronize valid strobes (2-stage sync chain)
         range_valid_sync   <= {range_valid_sync[0],   range_valid};
         doppler_valid_sync <= {doppler_valid_sync[0], doppler_valid};
         cfar_valid_sync    <= {cfar_valid_sync[0],    cfar_valid};
+
+        // Gap 2: stream control CDC (2-stage)
+        stream_ctrl_sync_0 <= stream_control;
+        stream_ctrl_sync_1 <= stream_ctrl_sync_0;
+
+        // Gap 2: status request CDC (toggle sync + edge detect)
+        status_req_sync <= {status_req_sync[0], status_req_toggle_100m};
+        status_req_sync_prev <= status_req_sync[1];
+
+        // Gap 2: Capture status snapshot when request arrives in ft601 domain
+        if (status_req_ft601) begin
+            // Pack register values into 5x 32-bit status words
+            // Word 0: {0xFF, mode[1:0], stream_ctrl[2:0], cfar_threshold[15:0]}
+            status_words[0] <= {8'hFF, 3'b000, status_radar_mode,
+                                5'b00000, status_stream_ctrl,
+                                status_cfar_threshold};
+            // Word 1: {long_chirp_cycles[15:0], long_listen_cycles[15:0]}
+            status_words[1] <= {status_long_chirp, status_long_listen};
+            // Word 2: {guard_cycles[15:0], short_chirp_cycles[15:0]}
+            status_words[2] <= {status_guard, status_short_chirp};
+            // Word 3: {short_listen_cycles[15:0], chirps_per_elev[5:0], 10'b0}
+            status_words[3] <= {status_short_listen, 10'd0, status_chirps_per_elev};
+            // Word 4: {system_status placeholder — 32'h00000000}
+            status_words[4] <= 32'h0000_0000;
+        end
 
         // Delayed version of sync[1] for edge detection
         range_valid_sync_d   <= range_valid_sync[1];
@@ -292,7 +377,15 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                 IDLE: begin
                     ft601_wr_n <= 1;
                     ft601_data_oe <= 0;  // Release data bus
-                    if (range_valid_ft || doppler_valid_ft || cfar_valid_ft) begin
+                    // Gap 2: Status readback takes priority
+                    if (status_req_ft601 && ft601_rxf) begin
+                        current_state <= SEND_STATUS;
+                        status_word_idx <= 3'd0;
+                    end
+                    // Gap 2: Only trigger write FSM if at least one enabled stream has data
+                    else if ((range_valid_ft && stream_range_en) ||
+                        (doppler_valid_ft && stream_doppler_en) ||
+                        (cfar_valid_ft && stream_cfar_en)) begin
                         // Don't start write if a read is about to begin
                         if (ft601_rxf) begin  // rxf=1 means no host data pending
                             current_state <= SEND_HEADER;
@@ -307,7 +400,15 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                         ft601_data_out <= {24'b0, HEADER};
                         ft601_be <= 4'b0001;  // Only lower byte valid
                         ft601_wr_n <= 0;     // Assert write strobe
-                        current_state <= SEND_RANGE_DATA;
+                        // Gap 2: skip to first enabled stream
+                        if (stream_range_en)
+                            current_state <= SEND_RANGE_DATA;
+                        else if (stream_doppler_en)
+                            current_state <= SEND_DOPPLER_DATA;
+                        else if (stream_cfar_en)
+                            current_state <= SEND_DETECTION_DATA;
+                        else
+                            current_state <= SEND_FOOTER;  // No streams — send footer only
                     end
                 end
                 
@@ -327,7 +428,13 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                         
                         if (byte_counter == 3) begin
                             byte_counter <= 0;
-                            current_state <= SEND_DOPPLER_DATA;
+                            // Gap 2: skip disabled streams
+                            if (stream_doppler_en)
+                                current_state <= SEND_DOPPLER_DATA;
+                            else if (stream_cfar_en)
+                                current_state <= SEND_DETECTION_DATA;
+                            else
+                                current_state <= SEND_FOOTER;
                         end else begin
                             byte_counter <= byte_counter + 1;
                         end
@@ -350,7 +457,11 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                         
                         if (byte_counter == 3) begin
                             byte_counter <= 0;
-                            current_state <= SEND_DETECTION_DATA;
+                            // Gap 2: skip disabled cfar stream
+                            if (stream_cfar_en)
+                                current_state <= SEND_DETECTION_DATA;
+                            else
+                                current_state <= SEND_FOOTER;
                         end else begin
                             byte_counter <= byte_counter + 1;
                         end
@@ -374,6 +485,40 @@ always @(posedge ft601_clk_in or negedge ft601_reset_n) begin
                         ft601_data_out <= {24'b0, FOOTER};
                         ft601_wr_n <= 0;
                         current_state <= WAIT_ACK;
+                    end
+                end
+
+                // Gap 2: Status readback — send 5 x 32-bit status words
+                // Format: HEADER, status_words[0..4], FOOTER
+                SEND_STATUS: begin
+                    if (!ft601_txe) begin
+                        ft601_data_oe <= 1;
+                        ft601_be <= 4'b1111;
+                        case (status_word_idx)
+                            3'd0: begin
+                                // Send status header marker (0xBB = status response)
+                                ft601_data_out <= {24'b0, 8'hBB};
+                                ft601_be <= 4'b0001;
+                            end
+                            3'd1: ft601_data_out <= status_words[0];
+                            3'd2: ft601_data_out <= status_words[1];
+                            3'd3: ft601_data_out <= status_words[2];
+                            3'd4: ft601_data_out <= status_words[3];
+                            3'd5: ft601_data_out <= status_words[4];
+                            3'd6: begin
+                                // Send status footer
+                                ft601_data_out <= {24'b0, FOOTER};
+                                ft601_be <= 4'b0001;
+                            end
+                            default: ;
+                        endcase
+                        ft601_wr_n <= 0;
+                        if (status_word_idx == 3'd6) begin
+                            status_word_idx <= 3'd0;
+                            current_state <= WAIT_ACK;
+                        end else begin
+                            status_word_idx <= status_word_idx + 1;
+                        end
                     end
                 end
                 
