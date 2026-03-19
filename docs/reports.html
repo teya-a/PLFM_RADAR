@@ -24,7 +24,11 @@
     <section class="hero">
       <p class="eyebrow">Artifacts</p>
       <h1>Published Reports and Visuals</h1>
-      <p>Central access point for antenna simulations, implementation summaries, timing baselines, and visuals.</p>
+      <p>Central access point for antenna simulations, implementation summaries, timing baselines, and board-day artifact references.</p>
+      <div class="cta-row">
+        <a class="button" href="board-day-worksheet.html">Open Board-Day Worksheet</a>
+        <a class="button ghost" href="bring-up.html">Open Bring-Up Plan</a>
+      </div>
     </section>
 
     <section class="card" style="margin-top:0.8rem;">
@@ -34,6 +38,32 @@
         <li>Build 16 was validated in the remote Vivado workspace as a constraint-cleanup pass: XDCB-5 warnings were removed, the large TIMING-18 bucket collapsed to a single <code>ft601_txe</code> methodology residue, and routed timing remained clean at WNS +0.058 ns, WHS +0.068 ns, WPWS +0.684 ns.</li>
         <li>The remaining <code>ft601_txe</code> methodology item currently behaves like an async-status-observation residue rather than a proven unconstrained functional FT601 path.</li>
       </ul>
+    </section>
+
+    <section class="card" style="margin-top:0.8rem;">
+      <h2>Board-day artifact inventory</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Artifact</th>
+              <th>Source path</th>
+              <th>Day-0 use</th>
+              <th>Status / note</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Production-target XDC</td><td><code>9_Firmware/9_2_FPGA/constraints/xc7a200t_fbg484.xdc</code></td><td>Constraint source of truth for the production FPGA target</td><td>Tracked and validated after Build 16 cleanup port</td></tr>
+            <tr><td>FPGA programming flow</td><td><code>9_Firmware/9_2_FPGA/scripts/program_fpga.tcl</code></td><td>Programs the device and reports DONE / INIT_COMPLETE / probes presence</td><td>Primary operator-facing programming script</td></tr>
+            <tr><td>Debug probe insertion flow</td><td><code>9_Firmware/9_2_FPGA/scripts/insert_ila_probes.tcl</code></td><td>Used when generating or refreshing debug-capable images</td><td>Keep matched with the selected debug bitstream</td></tr>
+            <tr><td>FPGA regression runner</td><td><code>9_Firmware/9_2_FPGA/run_regression.sh</code></td><td>Pre-arrival regression evidence for the tracked FPGA baseline</td><td>18 / 18 passing on the current tracked branch</td></tr>
+            <tr><td>MCU regression harness</td><td><code>9_Firmware/9_1_Microcontroller/tests/Makefile</code></td><td>Pre-arrival firmware regression evidence before flashing hardware</td><td>15 / 15 passing on the current tracked branch</td></tr>
+            <tr><td>Bring-up logging macros</td><td><code>9_Firmware/9_1_Microcontroller/9_1_1_C_Cpp_Libraries/diag_log.h</code></td><td>Defines the main first-power-on log vocabulary used over USART3</td><td>Observation-only instrumentation layer</td></tr>
+            <tr><td>Board-day worksheet</td><td><code>docs/board-day-worksheet.html</code></td><td>Record pass/fail, measurements, and blockers during first sessions</td><td>Use with this page and the bring-up plan</td></tr>
+            <tr><td>Bring-up execution plan</td><td><code>docs/bring-up.html</code></td><td>Operator checklist, abort criteria, observability targets, and open risks</td><td>Primary readiness document</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="grid-2" style="margin-top:0.8rem;">
@@ -83,6 +113,7 @@
         <li>The current routed production-target baseline is Build 15, with Build 16 used as a remote-only XDC cleanup validation pass.</li>
         <li>The latest public simulation PDF should be interpreted alongside the implementation log and release notes for the most accurate state of firmware bug closure and FPGA integration readiness.</li>
         <li>Detailed Build 15 and Build 16 engineering notes currently live in internal working reports and remote Vivado artifacts rather than this public docs directory.</li>
+        <li>The artifact inventory above is intended to stabilize day-0 execution even when the detailed internal engineering reports stay outside the public docs site.</li>
       </ul>
     </section>
 
